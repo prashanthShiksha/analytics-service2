@@ -57,3 +57,6 @@ venv.bak/
 # OS metadata
 .DS_Store
 Thumbs.db
+
+# Local object storage (STORAGE_PROVIDER=local)
+local_storage/

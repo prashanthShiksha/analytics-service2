@@ -4,6 +4,7 @@ from .gcp import GcpStorage
 from .aws_s3 import AwsS3Storage
 from .azure import AzureStorage
 from .oci import OciStorage
+from .local import LocalStorage
 import threading
 
 _storage_adapter: ObjectStorage | None = None
@@ -78,6 +79,12 @@ def get_object_storage() -> ObjectStorage:
                 client_id = settings.AZURE_CLIENT_ID,
                 client_secret = settings.AZURE_CLIENT_SECRET,
                 tenant_id = settings.AZURE_TENANT_ID,
+            )
+        elif provider == "local":
+            _storage_adapter = LocalStorage(
+                root = settings.STORAGE_LOCAL_ROOT,
+                public_bucket = settings.STORAGE_PUBLIC_BUCKET,
+                private_bucket = settings.STORAGE_PRIVATE_BUCKET,
             )
         elif provider == "oci":
             _storage_adapter = OciStorage(

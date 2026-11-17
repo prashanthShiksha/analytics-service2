@@ -5,7 +5,7 @@ from typing import Dict, Any, List
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ALLOWED_STORAGE_PROVIDERS = {"gcp", "aws", "azure", "oci"}
+ALLOWED_STORAGE_PROVIDERS = {"gcp", "aws", "azure", "oci", "local"}
 
 class Settings(BaseSettings):
     # Kafka Configuration
@@ -177,7 +177,8 @@ class Settings(BaseSettings):
     LLM_CONFIDENCE_SCORE_THRESHOLD: float = Field(default=0.8)
 
     # Generic Storage Configuration
-    STORAGE_PROVIDER: str = Field(default="gcp") # gcp | aws | azure | oci
+    STORAGE_PROVIDER: str = Field(default="gcp") # gcp | aws | azure | oci | local
+    STORAGE_LOCAL_ROOT: str = Field(default="local_storage")  # STORAGE_PROVIDER=local only: directory holding the bucket folders
     STORAGE_PUBLIC_BUCKET: str = Field(default="")   # bucket for AccessMode.PUBLIC objects (blurred images)
     STORAGE_PRIVATE_BUCKET: str = Field(default="")  # bucket for AccessMode.PRIVATE objects (CSVs)
     STORAGE_REGION: str = Field(default="")

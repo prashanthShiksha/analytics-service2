@@ -1,7 +1,7 @@
 """
 Real-Postgres tests of seed_config.sql executed the way app/database/db.py executes it: the seed creates the 4 leader
 categories, 4 programs, 11 configs and their 11 active version-1 rows; running it again changes nothing; it writes
-nothing while tenant 'mitra' does not exist; it never overwrites or resurrects what a user changed (a new
+its own tenant 'mitra' when the database lacks it (an existing tenant is never touched); it never overwrites or resurrects what a user changed (a new
 config_version, a deactivated version 1, renamed rows, a config an operator created under another id); an already
 seeded database is a no-op; the documented "new config_version" recipe keeps one active version per config; and
 Database.initialize_schema runs it.
@@ -79,7 +79,7 @@ def test_the_seed_writes_4_categories_4_programs_11_configs_and_11_active_versio
         rows = await conn.fetch("SELECT config_id::text, version, is_active, created_by FROM config_version")
         assert {(r["version"], r["is_active"], r["created_by"]) for r in rows} == {(1, True, "seed")}
         assert len({r["config_id"] for r in rows}) == 11
-        assert await conn.fetchval("SELECT count(*) FROM tenant") == 1                 # never creates the tenant
+        assert await conn.fetchval("SELECT count(*) FROM tenant") == 1                 # the existing tenant is not duplicated
     _run(body)
 
 
@@ -147,29 +147,45 @@ def test_the_file_is_one_script_that_one_execute_runs_inside_a_transaction_and_r
 
 # ------------------------------------------------------------------------------------------------ tenant missing
 
-def test_without_the_tenant_it_writes_nothing_and_does_not_fail():
+def test_without_the_tenant_the_seed_creates_it_and_seeds_everything():
     async def body(conn):
-        await seed_config(conn)
-        assert await _counts(conn) == {t: 0 for t in COUNTS}
         assert await conn.fetchval("SELECT count(*) FROM tenant") == 0
-    _run(body, tenant=False)
-
-
-def test_the_seed_applies_once_the_tenant_exists_later():
-    async def body(conn):
-        await seed_config(conn)
-        assert await _counts(conn) == {t: 0 for t in COUNTS}
-        await conn.execute("INSERT INTO tenant (name, code) VALUES ('Mitra', 'mitra')")
         await seed_config(conn)
         assert await _counts(conn) == COUNTS
+        row = await conn.fetchrow("SELECT name, created_by FROM tenant WHERE code = 'mitra'")
+        assert (row["name"], row["created_by"]) == ("Mitra", "seed")
+        await seed_config(conn)                                                 # again: nothing new, one tenant
+        assert await _counts(conn) == COUNTS
+        assert await conn.fetchval("SELECT count(*) FROM tenant") == 1
     _run(body, tenant=False)
 
 
-def test_another_tenant_alone_does_not_trigger_the_seed():
+def test_an_existing_tenant_is_never_touched_by_the_seed():
+    async def body(conn):
+        await conn.execute("UPDATE tenant SET name = 'Mitra Foundation', created_by = 'ops' WHERE code = 'mitra'")
+        await seed_config(conn)
+        assert await _counts(conn) == COUNTS
+        row = await conn.fetchrow("SELECT name, created_by FROM tenant WHERE code = 'mitra'")
+        assert (row["name"], row["created_by"]) == ("Mitra Foundation", "ops")
+        assert await conn.fetchval("SELECT count(*) FROM tenant") == 1
+    _run(body)
+
+
+def test_another_tenant_does_not_stop_the_seed_and_is_not_touched():
     async def body(conn):
         await conn.execute("INSERT INTO tenant (name, code) VALUES ('Other', 'other')")
         await seed_config(conn)
-        assert await _counts(conn) == {t: 0 for t in COUNTS}
+        assert await _counts(conn) == COUNTS
+        assert await conn.fetchval("SELECT count(*) FROM tenant") == 2
+    _run(body, tenant=False)
+
+
+def test_a_tenant_name_used_by_another_code_does_not_fail_the_seed_and_it_inserts_nothing():
+    async def body(conn):
+        await conn.execute("INSERT INTO tenant (name, code) VALUES ('Mitra', 'other')")   # 'Mitra' is taken
+        await seed_config(conn)                                                            # must not raise
+        assert await _counts(conn) == {t: 0 for t in COUNTS}                               # no 'mitra' tenant: guarded
+        assert await conn.fetchval("SELECT count(*) FROM tenant") == 1
     _run(body, tenant=False)
 
 
@@ -284,23 +300,27 @@ def test_the_documented_recipe_writes_a_new_active_version_and_the_seed_keeps_it
 
 # ------------------------------------------------------------------------------------------------ the real startup path
 
-def test_initialize_schema_runs_the_seed_and_warns_when_the_tenant_is_missing(monkeypatch, caplog):
+def test_initialize_schema_creates_the_missing_tenant_through_the_seed(monkeypatch, caplog):
     async def body(conn):
         pool = await asyncpg.create_pool(DSN, min_size=1, max_size=2)
         monkeypatch.setattr(settings, "RESET_DB", False)
         db.pool = pool
         try:
-            with caplog.at_level(logging.WARNING, logger="analytics_service.db"):
+            with caplog.at_level(logging.INFO, logger="analytics_service.db"):
                 await db.initialize_schema()
-            assert await _counts(conn) == {t: 0 for t in COUNTS}
-            # truthful: the statements are guarded by the tenant (they insert nothing), the rest of the seed still ran
-            seed_logs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Config seed")]
-            assert len(seed_logs) == 1 and "'mitra'" in seed_logs[0] and "insert nothing" in seed_logs[0]
-            assert not any("skipped" in r.getMessage() for r in caplog.records)
-            await conn.execute("INSERT INTO tenant (name, code) VALUES ('Mitra', 'mitra')")
-            await db.initialize_schema()
-            await db.initialize_schema()                                        # every start runs it again
+            # the tenant did not exist: the seed created it, so it inserted everything
             assert await _counts(conn) == COUNTS
+            row = await conn.fetchrow("SELECT name, created_by FROM tenant WHERE code = 'mitra'")
+            assert (row["name"], row["created_by"]) == ("Mitra", "seed")
+            seed_logs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("Config seed")]
+            assert len(seed_logs) == 1 and "'mitra'" in seed_logs[0] and "created by the seed" in seed_logs[0]
+            caplog.clear()
+            with caplog.at_level(logging.INFO, logger="analytics_service.db"):
+                await db.initialize_schema()
+                await db.initialize_schema()                                    # every start runs it again: a no-op
+            assert await _counts(conn) == COUNTS
+            assert await conn.fetchval("SELECT count(*) FROM tenant") == 1
+            assert not any(r.getMessage().startswith("Config seed") for r in caplog.records)
         finally:
             db.pool = None
             await pool.close()

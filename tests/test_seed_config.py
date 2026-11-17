@@ -104,7 +104,7 @@ def test_every_config_json_is_dollar_quoted_two_space_indented_and_stable():
 def test_the_file_has_no_other_dollar_quote_and_only_inserts():
     assert re.findall(r"\$[A-Za-z_]*\$", SQL) == ["$cfg$"] * 22
     statements = _statements()
-    assert len(statements) == 4 * 2 + 11 * 2
+    assert len(statements) == 1 + 4 * 2 + 11 * 2                 # the tenant, then 4 categories + 4 programs, 11 configs + 11 versions
     for statement in statements:
         assert statement.startswith("INSERT INTO "), statement[:60]
 
@@ -112,7 +112,7 @@ def test_the_file_has_no_other_dollar_quote_and_only_inserts():
 # ------------------------------------------------------------------------------------------------ never overwrites
 
 def test_no_statement_can_update_delete_or_replace_anything():
-    for word in ("DO UPDATE", "DELETE", "UPDATE ", "TRUNCATE", "DROP ", "ALTER ", "INSERT INTO tenant", "REPLACE"):
+    for word in ("DO UPDATE", "DELETE", "UPDATE ", "TRUNCATE", "DROP ", "ALTER ", "REPLACE"):
         assert word not in re.sub(r"\$cfg\$.*?\$cfg\$", "", SQL, flags=re.DOTALL), word
 
 
@@ -123,7 +123,9 @@ def test_every_insert_is_on_conflict_do_nothing():
 
 def test_every_insert_is_a_no_op_without_the_tenant_and_the_version_only_while_the_config_has_no_version():
     for statement in _statements():
-        if statement.startswith("INSERT INTO leader_category") or statement.startswith("INSERT INTO programs"):
+        if statement.startswith("INSERT INTO tenant"):
+            assert statement.endswith("ON CONFLICT DO NOTHING")            # the one unguarded statement: it creates the tenant
+        elif statement.startswith("INSERT INTO leader_category") or statement.startswith("INSERT INTO programs"):
             assert "EXISTS (SELECT 1 FROM tenant WHERE code = 'mitra')" in statement
         elif statement.startswith("INSERT INTO config "):
             assert "EXISTS (SELECT 1 FROM tenant WHERE code = 'mitra')" in statement
@@ -137,11 +139,14 @@ def test_every_insert_is_a_no_op_without_the_tenant_and_the_version_only_while_t
             raise AssertionError(statement[:80])
 
 
-def test_the_seed_depends_on_no_other_seed_and_never_creates_the_tenant():
+def test_the_seed_depends_on_no_other_seed_and_inserts_only_its_own_tenant_first_without_touching_an_existing_one():
     code = _without_comments()
     assert "prompts" not in code.replace("prompt_name", "")      # not on seed_prompts.sql (only a prompt name string)
     assert "themes" not in code
-    assert "INSERT INTO tenant" not in code
+    tenant_inserts = [s for s in _statements() if s.startswith("INSERT INTO tenant")]
+    assert len(tenant_inserts) == 1 and _statements()[0] == tenant_inserts[0]       # one tenant insert, the first statement
+    assert re.fullmatch(r"INSERT INTO tenant \(name, code, created_by\)\s+VALUES \('Mitra', 'mitra', 'seed'\)\s+"
+                        r"ON CONFLICT DO NOTHING", tenant_inserts[0])               # never updates an existing tenant
 
 
 # ------------------------------------------------------------------------------------------------ ids and rows
